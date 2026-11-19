@@ -56,6 +56,7 @@ enum ClipboardKeyboardIntegrationTests {
 
     final class Host {
         final class App {
+            var bundleIdentifier: String? = "com.example.editor"
             var isTerminated = false
             func activate(options: [Int]) { Host.current?.events.append("activate") }
         }
