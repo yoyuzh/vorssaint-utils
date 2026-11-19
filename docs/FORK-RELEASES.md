@@ -1,29 +1,43 @@
 # Maintaining and releasing the fork
 
-`main` mirrors `vorssaint/vorssaint-utils` upstream. `custom` contains the
-fork's features, CI and release workflow. Work on feature branches based on
-`custom` and merge those changes back into `custom`.
+`main` mirrors `vorssaint/vorssaint-utils` upstream. The fork's default branch,
+`custom`, contains its features, CI and release workflow. Base feature branches
+on `custom` and merge those changes back into `custom`.
 
-## Bring in an upstream release
+## Follow upstream releases
 
-From the fork checkout, with `origin` pointing to `yoyuzh/vorssaint-utils`
-and `upstream` to `vorssaint/vorssaint-utils`, run:
+Every six hours, **Fork Release** checks the latest verified upstream stable
+release and fast-forwards `main` to upstream `main`. It opens a PR into `custom`
+from the upstream release commit, without pulling in unrelated unreleased
+commits. If GitHub can merge the PR, the workflow merges it and runs the release
+tests, signing and notarization. The tag `custom-vX.Y.Z` is created only after
+packaging succeeds. Upstream prereleases do not trigger an automatic release.
+
+To check immediately, use **Actions → Fork Release → Run workflow** on `custom`.
+Leave `dry_run` enabled to inspect the state without making changes. Disable it
+to run synchronization and, after a successful build, publish. The fork Actions
+settings must allow GitHub Actions to create pull requests.
+
+### Resolve a sync PR conflict
+
+For a PR from `sync/upstream-vX.Y.Z`, bring `custom` into that PR branch:
 
 ```sh
-git fetch --no-tags upstream main
-git push origin upstream/main:refs/heads/main
-git switch custom
-git merge --no-ff upstream/main
-./build.sh --test
-./build.sh
-./build/Vorssaint --selftest
-git push origin custom
+git fetch origin
+git switch --track origin/sync/upstream-vX.Y.Z
+git merge origin/custom
 ```
 
-Resolve merge conflicts in `custom` before committing the merge. The mirror
-push is a fast-forward. The fork's CI runs when `custom` is pushed or receives
-a pull request. The push run uploads `vorssaint-custom-test-dmg` for local
-testing. This artifact has an ad-hoc signature and stays outside the update feed.
+Resolve the conflicts, stage the resolved files and finish the merge. Then run:
+
+```sh
+./build.sh --test
+git push origin HEAD
+```
+
+Merge the PR with a merge commit so the upstream release commit remains in
+`custom`'s history. The next sync run resumes CD. A conflict, failed test or
+failed signing step leaves already published versions untouched.
 
 ## Set up signing once
 
@@ -39,12 +53,13 @@ to the ten-character Apple Team ID. Add these environment secrets:
 | `NOTARY_KEY_ID` | App Store Connect API key ID |
 | `NOTARY_ISSUER_ID` | App Store Connect API issuer ID |
 
-Give the environment's deployment rules access to tags matching `custom-v*`.
+Give the environment's deployment rules access to the `custom` branch and tags
+matching `custom-v*`.
 The signed app uses `APPLE_TEAM_ID` to authenticate both the update DMG and the
 new app. Keep the same Team ID across releases so installed copies continue to
 accept updates.
 
-## Publish a fork version
+## Publish a fork version manually
 
 Pick a version greater than the last fork release. From the verified `custom`
 commit, create and push a new fork tag as `yoyuzh`:
