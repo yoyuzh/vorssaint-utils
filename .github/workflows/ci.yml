@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, custom]
   pull_request:
 
 permissions:
@@ -55,6 +55,15 @@ jobs:
 
       - name: Package DMG
         run: ./Tools/make-dmg.sh
+
+      - name: Upload the fork test DMG
+        if: github.repository == 'yoyuzh/vorssaint-utils' && github.ref == 'refs/heads/custom'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: vorssaint-custom-test-dmg
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 7
 
       - name: Unit tests
         run: ./build.sh --test

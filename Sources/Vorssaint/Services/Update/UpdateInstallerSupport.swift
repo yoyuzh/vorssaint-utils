@@ -23,8 +23,14 @@ enum UpdateInstallerSupport {
     /// $4 result marker path, $5 uid to relaunch as (used when running as
     /// root, where a plain `open` could launch the app as root), $6 expected
     /// version from the trusted release tag.
-    static func installerScript() -> String {
-        """
+    static func installerScript(
+        teamIdentifier: String? = Bundle.main.object(forInfoDictionaryKey: "VorssaintUpdateTeamIdentifier") as? String
+    ) -> String {
+        let team = teamIdentifier.flatMap { value in
+            value.range(of: #"\A[A-Z0-9]{10}\z"#, options: .regularExpression) == nil ? nil : value
+        } ?? ""
+        let signingRequirement = "anchor apple generic and certificate leaf[subject.OU] = \"\(team)\""
+        return """
         #!/bin/sh
         APP="$1"; DMG="$2"; PID="$3"; RESULT="$4"; ASUSER="$5"; EXPECTED_VERSION="$6"
         SCRIPT="$0"
@@ -63,8 +69,8 @@ enum UpdateInstallerSupport {
         }
         while kill -0 "$PID" 2>/dev/null; do sleep 0.3; done
         note fail-dmg-verify
-        DMG_VERIFY_REQ='anchor apple generic and certificate leaf[subject.OU] = "3D485NHW29"'
-        if ! /usr/bin/codesign -v --strict -R="$DMG_VERIFY_REQ" "$DMG" 2>/dev/null; then
+        DMG_VERIFY_REQ='\(signingRequirement)'
+        if [ -z "\(team)" ] || ! /usr/bin/codesign -v --strict -R="$DMG_VERIFY_REQ" "$DMG" 2>/dev/null; then
             /bin/rm -f "$DMG"
             finalize
             relaunch "$APP"
@@ -120,7 +126,7 @@ enum UpdateInstallerSupport {
                     elif /usr/sbin/spctl -a -t exec "$STAGE" >/dev/null 2>&1; then
                         GATEKEEPER_OK=1
                     fi
-                    VERIFY_REQ='identifier "com.vorssaint.utils" and anchor apple generic and certificate leaf[subject.OU] = "3D485NHW29"'
+                    VERIFY_REQ='identifier "com.vorssaint.utils" and \(signingRequirement)'
                     note fail-verify
                     if /usr/bin/codesign -v --deep --strict -R="$VERIFY_REQ" "$STAGE" 2>/dev/null \
                         && [ "$GATEKEEPER_OK" = 1 ]; then

@@ -27,7 +27,6 @@ final class UpdateService: ObservableObject {
     /// preview. Set alongside `.available`; cleared otherwise.
     @Published private(set) var availableNotes: String?
 
-    private let repository = "vorssaint/vorssaint-utils"
     private var downloadURL: URL?
     /// Size the release advertises for the asset, used to bound the download.
     private var downloadExpectedBytes: Int64?
@@ -118,11 +117,7 @@ final class UpdateService: ObservableObject {
         if case .installing = state { return }
         state = .checking
 
-        let endpoint = includeBetaUpdates
-            ? "https://api.github.com/repos/\(repository)/releases?per_page=10"
-            : "https://api.github.com/repos/\(repository)/releases/latest"
-
-        var request = URLRequest(url: URL(string: endpoint)!)
+        var request = URLRequest(url: UpdateServiceSupport.forkReleasesURL(includeBetas: includeBetaUpdates))
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         request.setValue("Vorssaint/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
         request.cachePolicy = .reloadIgnoringLocalCacheData
@@ -152,10 +147,11 @@ final class UpdateService: ObservableObject {
                     return
                 }
 
-                let candidates = releases.map { rel -> UpdateServiceSupport.ReleaseCandidate in
+                let candidates = releases.compactMap { rel -> UpdateServiceSupport.ReleaseCandidate? in
+                    guard let version = UpdateServiceSupport.forkReleaseVersion(from: rel.tagName) else { return nil }
                     let asset = rel.assets.first { $0.name.hasSuffix(".dmg") }
                     return UpdateServiceSupport.ReleaseCandidate(
-                        tagName: rel.tagName,
+                        tagName: version,
                         isPrerelease: rel.prerelease ?? false,
                         isDraft: rel.draft ?? false,
                         dmgURL: asset?.browserDownloadURL,
@@ -169,7 +165,7 @@ final class UpdateService: ObservableObject {
                     currentVersion: AppInfo.version,
                     includeBetas: self.includeBetaUpdates
                 ) {
-                    let versionClean = chosen.tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV "))
+                    let versionClean = chosen.tagName
                     self.downloadURL = chosen.dmgURL
                     self.downloadExpectedBytes = chosen.dmgExpectedBytes
                     self.availableNotes = ReleaseNotes.inAppUpdateNotes(from: chosen.body)

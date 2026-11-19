@@ -7,6 +7,16 @@ import Foundation
 /// Pure helpers for checking and comparing application versions according to
 /// Semantic Versioning 2.0.0, handling stable and pre-release (beta, rc, alpha) channels.
 enum UpdateServiceSupport {
+    static func forkReleasesURL(includeBetas: Bool) -> URL {
+        let releases = "https://api.github.com/repos/yoyuzh/vorssaint-utils/releases"
+        return URL(string: releases + (includeBetas ? "?per_page=10" : "/latest"))!
+    }
+
+    static func forkReleaseVersion(from tag: String) -> String? {
+        let pattern = #"\Acustom-v[0-9]+\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc)\.[0-9]+(?:\.[0-9]+)?)?\z"#
+        guard tag.range(of: pattern, options: .regularExpression) != nil else { return nil }
+        return String(tag.dropFirst("custom-v".count))
+    }
 
     static func sha256Matches(_ data: Data, expectedHex: String) -> Bool {
         guard expectedHex.utf8.count == SHA256.byteCount * 2 else { return false }

@@ -1,0 +1,177 @@
+name: Fork Release
+
+on:
+  push:
+    tags: ["custom-v[0-9]*"]
+
+permissions: {}
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    if: github.repository == 'yoyuzh/vorssaint-utils' && github.actor == 'yoyuzh' && github.triggering_actor == 'yoyuzh'
+    runs-on: macos-26
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Verify release source
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version=${GITHUB_REF_NAME#custom-v}
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+(\.[0-9]+)?)?$ ]]; then
+            echo "Invalid fork release tag: $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          commit="$(git rev-parse 'HEAD^{commit}')"
+          remote="$(gh api "repos/$GITHUB_REPOSITORY/commits/$GITHUB_REF_NAME" --jq .sha)"
+          [[ "$remote" == "$commit" ]] || { echo "Release tag moved." >&2; exit 1; }
+          relation="$(gh api "repos/$GITHUB_REPOSITORY/compare/$commit...custom" --jq '.status + ":" + .merge_base_commit.sha')"
+          if [[ "$relation" != "identical:$commit" && "$relation" != "ahead:$commit" ]]; then
+            echo "Release commit must be in the custom branch history." >&2
+            exit 1
+          fi
+          printf 'commit=%s\nversion=%s\n' "$commit" "$version" >> "$GITHUB_OUTPUT"
+      - name: Run tests
+        run: ./build.sh --test
+
+  package:
+    needs: preflight
+    runs-on: macos-26
+    timeout-minutes: 45
+    environment: fork-release-signing
+    permissions:
+      contents: read
+    env:
+      VORSSAINT_UPDATE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      VORSSAINT_RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ needs.preflight.outputs.commit }}
+          persist-credentials: false
+      - name: Import the fork signing identity
+        env:
+          REQUIRE_SIGNING: "1"
+          SIGNING_CERT_P12: ${{ secrets.SIGNING_CERT_P12 }}
+          SIGNING_CERT_PASSWORD: ${{ secrets.SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ "$VORSSAINT_UPDATE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]] || {
+            echo "Set APPLE_TEAM_ID in the fork-release-signing environment." >&2
+            exit 1
+          }
+          ./Tools/ci-setup-signing.sh
+      - name: Build and verify the signed app
+        run: |
+          set -euo pipefail
+          ./build.sh
+          ./build/Vorssaint --selftest
+          app=build/stage/Vorssaint.app
+          requirement="identifier \"com.vorssaint.utils\" and anchor apple generic and certificate leaf[subject.OU] = \"$VORSSAINT_UPDATE_TEAM_ID\""
+          codesign --verify --deep --strict -R="$requirement" "$app"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")" = "$VORSSAINT_RELEASE_VERSION"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :VorssaintUpdateTeamIdentifier' "$app/Contents/Info.plist")" = "$VORSSAINT_UPDATE_TEAM_ID"
+      - name: Notarize the app, then sign and notarize the DMG
+        env:
+          REQUIRE_NOTARIZATION: "1"
+          NOTARY_API_KEY_P8: ${{ secrets.NOTARY_API_KEY_P8 }}
+          NOTARY_KEY_ID: ${{ secrets.NOTARY_KEY_ID }}
+          NOTARY_ISSUER_ID: ${{ secrets.NOTARY_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          app=build/stage/Vorssaint.app
+          dmg="dist/Vorssaint-$VORSSAINT_RELEASE_VERSION.dmg"
+          ./Tools/notarize.sh "$app"
+          xcrun stapler validate "$app"
+          ./Tools/make-dmg.sh
+          identity="$(security find-identity -v -p codesigning | awk -v team="($VORSSAINT_UPDATE_TEAM_ID)" \
+            '$0 ~ /Developer ID Application:/ && index($0, team) && !found { print $2; found = 1 }')"
+          test -n "$identity"
+          codesign --force --timestamp --sign "$identity" "$dmg"
+          ./Tools/notarize.sh "$dmg"
+          requirement="anchor apple generic and certificate leaf[subject.OU] = \"$VORSSAINT_UPDATE_TEAM_ID\""
+          codesign --verify --strict -R="$requirement" "$dmg"
+          xcrun stapler validate "$dmg"
+          (cd dist && shasum -a 256 "$(basename "$dmg")" > SHA256SUMS)
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: fork-release-${{ github.run_id }}
+          path: |
+            dist/Vorssaint-${{ env.VORSSAINT_RELEASE_VERSION }}.dmg
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 1
+          overwrite: true
+
+  publish:
+    needs: [preflight, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131
+        with:
+          name: fork-release-${{ github.run_id }}
+      - name: Publish the verified DMG
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          COMMIT: ${{ needs.preflight.outputs.commit }}
+          VERSION: ${{ needs.preflight.outputs.version }}
+        run: |
+          set -euo pipefail
+          dmg="Vorssaint-$VERSION.dmg"
+          sha256sum -c SHA256SUMS
+          verify_tag() {
+            remote="$(gh api "repos/$GH_REPO/commits/$GITHUB_REF_NAME" --jq .sha)"
+            if [[ "$remote" != "$COMMIT" ]]; then
+              echo "Release tag moved." >&2
+              exit 1
+            fi
+          }
+          verify_tag
+          prerelease=false
+          if [[ "$VERSION" == *-* ]]; then prerelease=true; fi
+
+          verify_asset() {
+            release_id="$(gh release view "$GITHUB_REF_NAME" --json databaseId --jq .databaseId)"
+            digest="$(sha256sum "$dmg" | cut -d ' ' -f 1)"
+            actual="$(gh api "repos/$GH_REPO/releases/$release_id/assets" --jq 'map([.name, .digest] | @tsv) | join("\n")')"
+            if [[ "$actual" != "$dmg"$'\t'"sha256:$digest" ]]; then
+              echo "Release asset is missing or its digest does not match." >&2
+              exit 1
+            fi
+          }
+
+          if existing="$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease,author)"; then
+            test "$(jq -r .author.login <<<"$existing")" = 'github-actions[bot]'
+            if [[ "$(jq -r .isDraft <<<"$existing")" == false ]]; then
+              test "$(jq -r .isPrerelease <<<"$existing")" = "$prerelease"
+              verify_asset
+              exit 0
+            fi
+            gh release upload "$GITHUB_REF_NAME" "$dmg" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "$dmg" --verify-tag --draft --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+          verify_asset
+          verify_tag
+          if [[ "$prerelease" == true ]]; then
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --draft=false --prerelease=false --latest
+          fi

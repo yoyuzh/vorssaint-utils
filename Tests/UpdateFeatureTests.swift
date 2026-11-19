@@ -966,7 +966,14 @@ enum UpdateFeatureTests {
         suite.expect(!UpdateInstallerSupport.runsFromImmutableLocation(appPath: "/Volumes/ExternalSSD/Vorssaint.app",
                                                                  volumeIsReadOnly: { _ in false }),
                "apps on a writable external volume stay updatable in place")
-        let installerScript = UpdateInstallerSupport.installerScript()
+        let installerScript = UpdateInstallerSupport.installerScript(teamIdentifier: "ABCD123456")
+        suite.expect(installerScript.components(separatedBy: "certificate leaf[subject.OU] = \"ABCD123456\"").count == 3
+                  && !installerScript.contains("3D485NHW29"),
+               "the DMG and bundled app must be signed by the configured fork team")
+        let unconfiguredInstaller = UpdateInstallerSupport.installerScript(teamIdentifier: "bad' team")
+        suite.expect(unconfiguredInstaller.contains("[ -z \"\" ]")
+                  && !unconfiguredInstaller.contains("bad' team"),
+               "an invalid release team fails closed before mounting without becoming shell code")
         for step in ["fail-dmg-verify", "fail-tempdir", "fail-mount", "fail-no-app-in-dmg",
                      "fail-copy", "fail-version", "fail-verify", "fail-swap", "note ok"] {
             suite.expect(installerScript.contains(step),
@@ -1146,6 +1153,17 @@ enum UpdateFeatureTests {
                && UpdateServiceSupport.selectUpdate(from: [betaHotfix], currentVersion: "3.3.5",
                                                      includeBetas: false) == nil,
                "the beta channel offers the hotfix while the stable channel ignores it")
+
+        suite.expect(UpdateServiceSupport.forkReleasesURL(includeBetas: false).absoluteString
+               == "https://api.github.com/repos/yoyuzh/vorssaint-utils/releases/latest"
+               && UpdateServiceSupport.forkReleasesURL(includeBetas: true).absoluteString
+               == "https://api.github.com/repos/yoyuzh/vorssaint-utils/releases?per_page=10",
+               "both update channels are served by the fork")
+        suite.expect(UpdateServiceSupport.forkReleaseVersion(from: "custom-v3.4.5") == "3.4.5"
+               && UpdateServiceSupport.forkReleaseVersion(from: "custom-v3.4.5-beta.1") == "3.4.5-beta.1"
+               && UpdateServiceSupport.forkReleaseVersion(from: "v3.4.5") == nil
+               && UpdateServiceSupport.forkReleaseVersion(from: "custom-v3.four.5") == nil,
+               "only fork release tags map to comparable installed versions")
 
         // Release candidate selection
         let dummyDMG = URL(string: "https://github.com/vorssaint/vorssaint-utils/releases/download/v3.3.4/Vorssaint.dmg")!

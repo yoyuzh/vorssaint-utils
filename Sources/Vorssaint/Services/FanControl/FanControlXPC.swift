@@ -8,7 +8,13 @@ import CryptoKit
 #endif
 
 enum FanControlIdentifiers {
-    static let teamID = "3D485NHW29"
+    private static let teamID: String = {
+        guard let identifier = currentSigningInfo()?[kSecCodeInfoTeamIdentifier as String] as? String,
+              identifier.range(of: #"\A[A-Z0-9]{10}\z"#, options: .regularExpression) != nil else {
+            return ""
+        }
+        return identifier
+    }()
 
     #if VORSSAINT_DEVELOPMENT
     static let appBundleID = "com.vorssaint.utils.dev"
@@ -43,6 +49,18 @@ enum FanControlIdentifiers {
 
     #if VORSSAINT_DEVELOPMENT
     private static func currentLeafCertificateSHA1() -> String? {
+        guard let certificates = currentSigningInfo()?[kSecCodeInfoCertificates as String] as? [SecCertificate],
+              let leaf = certificates.first else {
+            return nil
+        }
+
+        let data = SecCertificateCopyData(leaf) as Data
+        let digest = Insecure.SHA1.hash(data: data)
+        return digest.map { String(format: "%02x", $0) }.joined()
+    }
+    #endif
+
+    private static func currentSigningInfo() -> [String: Any]? {
         var dynamicCode: SecCode?
         guard SecCodeCopySelf([], &dynamicCode) == errSecSuccess,
               let selfCode = dynamicCode else {
@@ -56,21 +74,12 @@ enum FanControlIdentifiers {
         }
 
         var signingInfo: CFDictionary?
-        guard SecCodeCopySigningInformation(staticSelfCode, SecCSFlags(rawValue: kSecCSSigningInformation), &signingInfo) == errSecSuccess,
-              let info = signingInfo as? [String: Any] else {
+        guard SecCodeCopySigningInformation(staticSelfCode, SecCSFlags(rawValue: kSecCSSigningInformation),
+                                            &signingInfo) == errSecSuccess else {
             return nil
         }
-
-        guard let certificates = info[kSecCodeInfoCertificates as String] as? [SecCertificate],
-              let leaf = certificates.first else {
-            return nil
-        }
-
-        let data = SecCertificateCopyData(leaf) as Data
-        let digest = Insecure.SHA1.hash(data: data)
-        return digest.map { String(format: "%02x", $0) }.joined()
+        return signingInfo as? [String: Any]
     }
-    #endif
 }
 
 @objc protocol FanControlXPCProtocol {

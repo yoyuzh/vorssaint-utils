@@ -42,6 +42,15 @@ for arg in "$@"; do
     esac
 done
 
+if [[ -n "${VORSSAINT_UPDATE_TEAM_ID:-}" && ! "$VORSSAINT_UPDATE_TEAM_ID" =~ '^[A-Z0-9]{10}$' ]]; then
+    echo "VORSSAINT_UPDATE_TEAM_ID must be a ten-character Apple Team ID." >&2
+    exit 1
+fi
+if [[ -n "${VORSSAINT_RELEASE_VERSION:-}" && ! "$VORSSAINT_RELEASE_VERSION" =~ '^[0-9]+\.[0-9]+\.[0-9]+(-(alpha|beta|rc)\.[0-9]+(\.[0-9]+)?)?$' ]]; then
+    echo "VORSSAINT_RELEASE_VERSION must be a stable or prerelease version." >&2
+    exit 1
+fi
+
 if (( DEV )); then
     APP_NAME="Vorssaint (Developer)"
     EXECUTABLE="VorssaintDeveloper"
@@ -737,6 +746,15 @@ if (( DEV )); then
     [[ -n "$(git status --porcelain 2>/dev/null)" ]] && SHA="$SHA-dirty"
     /usr/libexec/PlistBuddy -c "Add :VorssaintBuildCommit string '$SHA · $(date '+%Y-%m-%d %H:%M')'" "$STAGE/Contents/Info.plist"
     echo "  stamped dev build: $SHA"
+else
+    if [[ -n "${VORSSAINT_UPDATE_TEAM_ID:-}" ]]; then
+        /usr/libexec/PlistBuddy -c "Add :VorssaintUpdateTeamIdentifier string $VORSSAINT_UPDATE_TEAM_ID" \
+            "$STAGE/Contents/Info.plist"
+    fi
+    if [[ -n "${VORSSAINT_RELEASE_VERSION:-}" ]]; then
+        /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VORSSAINT_RELEASE_VERSION" \
+            "$STAGE/Contents/Info.plist"
+    fi
 fi
 FAN_HELPER_VERSION="$(
     export LC_ALL=C
